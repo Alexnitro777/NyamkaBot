@@ -1,5 +1,5 @@
 {
-  "name": "femverify-bot",
+  "name": "nyamkabot",
   "version": "1.0.0",
   "description": "Discord verification bot with application forms, moderation and appeals",
   "main": "dist/index.js",

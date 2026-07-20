@@ -9,9 +9,9 @@ services:
       # Подключение к MariaDB/MySQL (единственная конфигурация вне БД).
       DB_HOST: your-mariadb-host
       DB_PORT: "3306"
-      DB_USER: femverify
+      DB_USER: nyamka
       DB_PASSWORD: ""
-      DB_NAME: femverify
+      DB_NAME: nyamka
       # Только для первого запуска: бот запишет их в таблицу app_config и дальше
       # читает оттуда — после старта эти строки можно убрать. Либо внесите token и
       # clientId напрямую в app_config (SQL) и не задавайте их здесь вовсе.
