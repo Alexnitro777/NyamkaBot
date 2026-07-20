@@ -1,4 +1,4 @@
-FROM node:24.16-slim AS builder
+FROM node:24.18-slim AS builder
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -6,7 +6,7 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
 
-FROM node:24.16-slim AS runtime
+FROM node:24.18-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NODE_NO_WARNINGS=1

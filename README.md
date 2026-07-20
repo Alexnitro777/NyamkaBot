@@ -68,7 +68,7 @@ NyamkaBot/
 │   ├── features.md                  Краткий обзор возможностей
 │   ├── permissions.md               Справочник по правам доступа
 │   └── verification-and-appeals.md  Полный разбор сценариев верификации и апелляций
-├── Dockerfile                Сборка образа (multi-stage, node:24.16-slim)
+├── Dockerfile                Сборка образа (multi-stage, node:24.18-slim)
 ├── docker-compose.example.yml  Шаблон сервиса bot + переменные окружения
 ├── docker-compose.yml        Реальное описание сервиса (не в git, своё имя image и переменные)
 ├── tsconfig.json             Настройки TypeScript
