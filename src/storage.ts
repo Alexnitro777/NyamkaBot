@@ -206,11 +206,26 @@ export function nextAppealNumber(guildId: string): Promise<number> {
 }
 
 function rowToApp(row: typeof applications.$inferSelect): Application {
+  let answers: Record<string, string> = {};
+  try {
+    answers = JSON.parse(row.answers);
+  } catch {
+    answers = {};
+  }
+  let removedRoles: string[] | undefined;
+  if (row.removedRoles) {
+    try {
+      removedRoles = JSON.parse(row.removedRoles);
+    } catch {
+      removedRoles = undefined;
+    }
+  }
+
   return {
     userId: row.userId,
     username: row.username,
     guildId: row.guildId,
-    answers: JSON.parse(row.answers),
+    answers,
     submittedAt: Number(row.submittedAt),
     status: row.status as ApplicationStatus,
     reviewMessageUrl: row.reviewMessageUrl ?? undefined,
@@ -219,7 +234,7 @@ function rowToApp(row: typeof applications.$inferSelect): Application {
     questionChannelId: row.questionChannelId ?? undefined,
     number: row.number ?? undefined,
     joinMethod: row.joinMethod ?? undefined,
-    removedRoles: row.removedRoles ? JSON.parse(row.removedRoles) : undefined,
+    removedRoles,
   };
 }
 

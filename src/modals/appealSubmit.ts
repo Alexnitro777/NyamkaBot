@@ -96,17 +96,27 @@ const handler: ModalHandler = {
 		}
 
 		const now = Date.now();
-		const reserved = await reserveAppeal({
-			userId: interaction.user.id,
-			guildId,
-			username: interaction.user.tag,
-			text,
-			submittedAt: now,
-			status: 'pending',
-			reviewMessageUrl: msg.url,
-			blacklistReason,
-			number,
-		});
+		let reserved = false;
+		try {
+			reserved = await reserveAppeal({
+				userId: interaction.user.id,
+				guildId,
+				username: interaction.user.tag,
+				text,
+				submittedAt: now,
+				status: 'pending',
+				reviewMessageUrl: msg.url,
+				blacklistReason,
+				number,
+			});
+		} catch (e) {
+			console.error('[appealSubmit] failed to reserve appeal:', e);
+			await msg.delete().catch(() => null);
+			await interaction.editReply({
+				content: '❌ Ошибка при сохранении апелляции. Попробуйте позже или сообщите администрации.',
+			});
+			return;
+		}
 
 		if (!reserved) {
 			await msg.delete().catch(() => null);

@@ -53,7 +53,7 @@ const handler: ModalHandler = {
     const submitter = await interaction.guild?.members
       .fetch(interaction.user.id)
       .catch(() => null);
-    if (submitter?.roles.cache.has(gc.roles.blacklist) || (gc.roles.blacklistSoft?.some((id) => submitter?.roles.cache.has(id)) ?? false)) {
+    if (submitter?.roles.cache.has(gc.roles.blacklist)) {
       await interaction.editReply({
         content: 'Вы находитесь в чёрном списке. Используйте канал апелляции.',
       });
@@ -170,17 +170,27 @@ const handler: ModalHandler = {
     }
 
     const now = Date.now();
-    const reserved = await reserveApplication({
-      userId: interaction.user.id,
-      username: interaction.user.tag,
-      guildId,
-      answers,
-      submittedAt: now,
-      status: 'pending',
-      reviewMessageUrl: msg.url,
-      number,
-      joinMethod,
-    });
+    let reserved = false;
+    try {
+      reserved = await reserveApplication({
+        userId: interaction.user.id,
+        username: interaction.user.tag,
+        guildId,
+        answers,
+        submittedAt: now,
+        status: 'pending',
+        reviewMessageUrl: msg.url,
+        number,
+        joinMethod,
+      });
+    } catch (e) {
+      console.error('[verifySubmit] failed to reserve application:', e);
+      await msg.delete().catch(() => null);
+      await interaction.editReply({
+        content: '❌ Ошибка при сохранении заявки. Попробуйте позже или сообщите администрации.',
+      });
+      return;
+    }
 
     if (!reserved) {
       await msg.delete().catch(() => null);

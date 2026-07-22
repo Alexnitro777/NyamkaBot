@@ -15,7 +15,7 @@ const handler: ButtonHandler = {
 
   async execute(interaction: ButtonInteraction, gc: GuildConfig): Promise<void> {
     const member = interaction.member as GuildMember | null;
-    if (member && (member.roles.cache.has(gc.roles.blacklist) || (gc.roles.blacklistSoft?.some((id) => member.roles.cache.has(id)) ?? false))) {
+    if (member?.roles.cache.has(gc.roles.blacklist)) {
       await interaction.reply({
         content: 'Вы находитесь в чёрном списке. Используйте канал апелляции.',
         flags: MessageFlags.Ephemeral,
