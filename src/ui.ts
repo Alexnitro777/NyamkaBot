@@ -443,6 +443,10 @@ export function buildHistoryView(
 		const title = HISTORY_TITLE_MAP[item.type] ?? `📌 **${item.type}**`;
 
 		let fieldBody = `<t:${ts}:f> (<t:${ts}:R>)`;
+		if (item.reviewMessageUrl) {
+			const label = item.type.startsWith('appeal') ? 'Перейти к апелляции' : 'Перейти к анкете';
+			fieldBody += ` • [${label}](${item.reviewMessageUrl})`;
+		}
 		if (item.executorId) {
 			fieldBody += `\n👤 **Модератор:** <@${item.executorId}>`;
 		}

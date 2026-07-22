@@ -179,6 +179,7 @@ const handler: ButtonHandler = {
 			type: action === 'amnesty' ? 'appeal_amnestied' : 'appeal_denied',
 			timestamp: Date.now(),
 			executorId: interaction.user.id,
+			reviewMessageUrl: appeal?.reviewMessageUrl ?? interaction.message.url,
 		});
 
 		const guild = getGuild(interaction);

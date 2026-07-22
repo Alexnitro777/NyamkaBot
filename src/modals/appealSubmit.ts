@@ -129,6 +129,7 @@ const handler: ModalHandler = {
 			userId: interaction.user.id,
 			type: 'appeal_submitted',
 			timestamp: now,
+			reviewMessageUrl: msg.url,
 		});
 
 		await interaction.editReply({

@@ -119,4 +119,5 @@ export interface HistoryRecord {
   executorId?: string;
   reason?: string;
   details?: string;
+  reviewMessageUrl?: string;
 }

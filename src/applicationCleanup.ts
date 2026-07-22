@@ -84,6 +84,7 @@ async function closeExpiredApplication(
     userId: app.userId,
     type: 'application_expired',
     timestamp: Date.now(),
+    reviewMessageUrl: app.reviewMessageUrl,
   });
 
   const fresh = (await getApplication(app.guildId, app.userId)) ?? app;

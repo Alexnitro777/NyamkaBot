@@ -53,6 +53,7 @@ const handler: ModalHandler = {
     }
 
     const { ok: rolesOk, removed } = await blacklistMemberRoles(member, gc);
+    const existing = await getApplication(guildId, userId);
 
     await saveHistoryRecord({
       guildId,
@@ -61,9 +62,9 @@ const handler: ModalHandler = {
       timestamp: Date.now(),
       executorId: interaction.user.id,
       reason,
+      reviewMessageUrl: existing?.reviewMessageUrl,
     });
 
-    const existing = await getApplication(guildId, userId);
     if (existing) {
       await updateApplication(guildId, userId, {
         status: 'blacklisted',

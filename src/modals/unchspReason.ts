@@ -81,6 +81,8 @@ const handler: ModalHandler = {
       await updateApplication(guildId, userId, { status: 'amnestied', removedRoles: [] });
     }
 
+    const appeal = await getAppeal(guildId, userId);
+
     await saveHistoryRecord({
       guildId,
       userId,
@@ -88,9 +90,9 @@ const handler: ModalHandler = {
       timestamp: Date.now(),
       executorId: interaction.user.id,
       reason,
+      reviewMessageUrl: existing?.reviewMessageUrl ?? appeal?.reviewMessageUrl,
     });
 
-    const appeal = await getAppeal(guildId, userId);
     if (appeal && appeal.status === 'pending') {
       await updateAppeal(guildId, userId, {
         status: 'amnestied',

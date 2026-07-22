@@ -198,6 +198,14 @@ const handler: ModalHandler = {
       return;
     }
 
+    await saveHistoryRecord({
+      guildId,
+      userId: interaction.user.id,
+      type: 'application_submitted',
+      timestamp: now,
+      reviewMessageUrl: msg.url,
+    });
+
     await interaction.editReply({
       content: '✅ Анкета отправлена. Ожидайте решения модерации.',
     });

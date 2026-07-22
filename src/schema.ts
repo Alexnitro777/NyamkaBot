@@ -95,6 +95,7 @@ export const userHistory = mysqlTable(
     executorId: varchar('executorId', { length: 32 }),
     reason: text('reason'),
     details: text('details'),
+    reviewMessageUrl: text('reviewMessageUrl'),
   },
   (table) => [
     index('idx_guild_user_time').on(table.guildId, table.userId, table.timestamp),

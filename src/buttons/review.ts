@@ -213,6 +213,7 @@ const handler: ButtonHandler = {
 			type: 'application_approved',
 			timestamp: Date.now(),
 			executorId: interaction.user.id,
+			reviewMessageUrl: app?.reviewMessageUrl ?? interaction.message.url,
 		});
 
 		const dmOk = await member

@@ -37,6 +37,7 @@ const handler: ModalHandler = {
       timestamp: Date.now(),
       executorId: interaction.user.id,
       reason,
+      reviewMessageUrl: app.reviewMessageUrl,
     });
 
     const guild = interaction.guild;

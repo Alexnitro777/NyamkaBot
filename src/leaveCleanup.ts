@@ -67,6 +67,7 @@ async function handleMemberRemove(
       userId,
       type: 'application_left',
       timestamp: Date.now(),
+      reviewMessageUrl: app.reviewMessageUrl,
     });
     await markReviewMessageLeft(guild, app.reviewMessageUrl);
     if (app.questionChannelId) {
@@ -82,6 +83,7 @@ async function handleMemberRemove(
       userId,
       type: 'appeal_left',
       timestamp: Date.now(),
+      reviewMessageUrl: appeal.reviewMessageUrl,
     });
     await markReviewMessageLeft(guild, appeal.reviewMessageUrl);
     if (appeal.questionChannelId) {

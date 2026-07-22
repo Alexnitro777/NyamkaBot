@@ -117,6 +117,7 @@ export async function initStorage(): Promise<void> {
       executorId VARCHAR(32) NULL,
       reason TEXT NULL,
       details TEXT NULL,
+      reviewMessageUrl TEXT NULL,
       INDEX idx_guild_user_time (guildId, userId, timestamp)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
@@ -131,6 +132,8 @@ export async function initStorage(): Promise<void> {
   await addColumnIfMissing('appeals', 'questionChannelId VARCHAR(32) NULL');
   await addColumnIfMissing('appeals', 'blacklistReason TEXT NULL');
   await addColumnIfMissing('appeals', 'number INT NULL');
+
+  await addColumnIfMissing('user_history', 'reviewMessageUrl TEXT NULL');
 
   initialized = true;
 }
@@ -655,6 +658,23 @@ export async function markAppealLeft(
 }
 
 export async function saveHistoryRecord(record: HistoryRecord): Promise<void> {
+  const recent = await db
+    .select()
+    .from(userHistory)
+    .where(
+      and(
+        eq(userHistory.guildId, record.guildId),
+        eq(userHistory.userId, record.userId),
+        eq(userHistory.type, record.type),
+      ),
+    )
+    .orderBy(desc(userHistory.timestamp))
+    .limit(1);
+
+  if (recent.length > 0 && Math.abs(Number(recent[0].timestamp) - record.timestamp) < 10_000) {
+    return;
+  }
+
   await db.insert(userHistory).values({
     guildId: record.guildId,
     userId: record.userId,
@@ -663,6 +683,7 @@ export async function saveHistoryRecord(record: HistoryRecord): Promise<void> {
     executorId: record.executorId ?? null,
     reason: record.reason ?? null,
     details: record.details ?? null,
+    reviewMessageUrl: record.reviewMessageUrl ?? null,
   });
 }
 
@@ -676,18 +697,17 @@ export async function getUserHistory(
     .where(and(eq(userHistory.guildId, guildId), eq(userHistory.userId, userId)))
     .orderBy(desc(userHistory.timestamp));
 
-  if (rows.length > 0) {
-    return rows.map((r) => ({
-      id: r.id,
-      guildId: r.guildId,
-      userId: r.userId,
-      type: r.type as HistoryEventType,
-      timestamp: Number(r.timestamp),
-      executorId: r.executorId ?? undefined,
-      reason: r.reason ?? undefined,
-      details: r.details ?? undefined,
-    }));
-  }
+  const dbRecords: HistoryRecord[] = rows.map((r) => ({
+    id: r.id,
+    guildId: r.guildId,
+    userId: r.userId,
+    type: r.type as HistoryEventType,
+    timestamp: Number(r.timestamp),
+    executorId: r.executorId ?? undefined,
+    reason: r.reason ?? undefined,
+    details: r.details ?? undefined,
+    reviewMessageUrl: r.reviewMessageUrl ?? undefined,
+  }));
 
   const legacy: HistoryRecord[] = [];
   const app = await getApplication(guildId, userId);
@@ -697,6 +717,7 @@ export async function getUserHistory(
       userId,
       type: 'application_submitted',
       timestamp: app.submittedAt,
+      reviewMessageUrl: app.reviewMessageUrl,
     });
     if (app.status === 'approved') {
       legacy.push({
@@ -705,6 +726,7 @@ export async function getUserHistory(
         type: 'application_approved',
         timestamp: app.submittedAt + 1,
         executorId: app.reviewerId,
+        reviewMessageUrl: app.reviewMessageUrl,
       });
     } else if (app.status === 'rejected') {
       legacy.push({
@@ -714,6 +736,7 @@ export async function getUserHistory(
         timestamp: app.submittedAt + 1,
         executorId: app.reviewerId,
         reason: app.reason,
+        reviewMessageUrl: app.reviewMessageUrl,
       });
     } else if (app.status === 'blacklisted') {
       legacy.push({
@@ -723,6 +746,7 @@ export async function getUserHistory(
         timestamp: app.submittedAt + 1,
         executorId: app.reviewerId,
         reason: app.reason,
+        reviewMessageUrl: app.reviewMessageUrl,
       });
     } else if (app.status === 'expired') {
       legacy.push({
@@ -730,6 +754,7 @@ export async function getUserHistory(
         userId,
         type: 'application_expired',
         timestamp: app.submittedAt + 1,
+        reviewMessageUrl: app.reviewMessageUrl,
       });
     } else if (app.status === 'left') {
       legacy.push({
@@ -737,6 +762,7 @@ export async function getUserHistory(
         userId,
         type: 'application_left',
         timestamp: app.submittedAt + 1,
+        reviewMessageUrl: app.reviewMessageUrl,
       });
     }
   }
@@ -748,6 +774,7 @@ export async function getUserHistory(
       userId,
       type: 'appeal_submitted',
       timestamp: appeal.submittedAt,
+      reviewMessageUrl: appeal.reviewMessageUrl,
     });
     if (appeal.status === 'amnestied') {
       legacy.push({
@@ -757,6 +784,7 @@ export async function getUserHistory(
         timestamp: appeal.resolvedAt ?? (appeal.submittedAt + 1),
         executorId: appeal.reviewerId,
         reason: appeal.reason,
+        reviewMessageUrl: appeal.reviewMessageUrl,
       });
     } else if (appeal.status === 'denied') {
       legacy.push({
@@ -766,6 +794,7 @@ export async function getUserHistory(
         timestamp: appeal.resolvedAt ?? (appeal.submittedAt + 1),
         executorId: appeal.reviewerId,
         reason: appeal.reason,
+        reviewMessageUrl: appeal.reviewMessageUrl,
       });
     } else if (appeal.status === 'left') {
       legacy.push({
@@ -773,10 +802,36 @@ export async function getUserHistory(
         userId,
         type: 'appeal_left',
         timestamp: appeal.submittedAt + 1,
+        reviewMessageUrl: appeal.reviewMessageUrl,
       });
     }
   }
 
-  legacy.sort((a, b) => b.timestamp - a.timestamp);
-  return legacy;
+  const combined: HistoryRecord[] = [...dbRecords];
+  for (const leg of legacy) {
+    const existsInDb = dbRecords.some(
+      (rec) =>
+        rec.type === leg.type &&
+        Math.abs(rec.timestamp - leg.timestamp) < 120_000,
+    );
+    if (!existsInDb) {
+      combined.push(leg);
+    }
+  }
+
+  const deduplicated: HistoryRecord[] = [];
+  for (const rec of combined) {
+    const isDup = deduplicated.some(
+      (existing) =>
+        existing.type === rec.type &&
+        Math.abs(existing.timestamp - rec.timestamp) < 120_000 &&
+        (existing.reason === rec.reason || !existing.reason || !rec.reason),
+    );
+    if (!isDup) {
+      deduplicated.push(rec);
+    }
+  }
+
+  deduplicated.sort((a, b) => b.timestamp - a.timestamp);
+  return deduplicated;
 }
