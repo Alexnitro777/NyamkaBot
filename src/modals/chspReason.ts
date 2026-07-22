@@ -1,6 +1,6 @@
 import { ModalSubmitInteraction, GuildMember, MessageFlags, EmbedBuilder, TextChannel } from 'discord.js';
 import { ModalHandler, GuildConfig } from '../types';
-import { getApplication, updateApplication, saveApplication } from '../storage';
+import { getApplication, updateApplication, saveApplication, saveHistoryRecord } from '../storage';
 import { buildDmEmbed, postDecisionMessage, buildResolvedEmbed, buildProcessedButtonRow } from '../ui';
 import { blacklistMemberRoles } from '../roles';
 import { canManageByHierarchy } from '../permissions';
@@ -53,6 +53,15 @@ const handler: ModalHandler = {
     }
 
     const { ok: rolesOk, removed } = await blacklistMemberRoles(member, gc);
+
+    await saveHistoryRecord({
+      guildId,
+      userId,
+      type: 'chsp_added',
+      timestamp: Date.now(),
+      executorId: interaction.user.id,
+      reason,
+    });
 
     const existing = await getApplication(guildId, userId);
     if (existing) {

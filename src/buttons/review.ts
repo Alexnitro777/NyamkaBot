@@ -17,6 +17,7 @@ import {
 	claimApplication,
 	updateApplication,
 	claimApplicationQuestionChannel,
+	saveHistoryRecord,
 } from '../storage';
 import {
 	buildResolvedEmbed,
@@ -205,6 +206,14 @@ const handler: ButtonHandler = {
 			});
 			return;
 		}
+
+		await saveHistoryRecord({
+			guildId,
+			userId,
+			type: 'application_approved',
+			timestamp: Date.now(),
+			executorId: interaction.user.id,
+		});
 
 		const dmOk = await member
 			.send({

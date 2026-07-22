@@ -1,12 +1,27 @@
-import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
-import { pool } from './db';
-import { Application, ApplicationStatus, Appeal, AppealStatus } from './types';
-
-const db: Pool = pool;
+import type { ResultSetHeader } from 'mysql2/promise';
+import { eq, and, sql, asc, desc } from 'drizzle-orm';
+import { pool, db } from './db';
+import {
+  applications,
+  appeals,
+  counters,
+  joinMethods,
+  guildSettings,
+  appConfig,
+  userHistory,
+} from './schema';
+import {
+  Application,
+  ApplicationStatus,
+  Appeal,
+  AppealStatus,
+  HistoryRecord,
+  HistoryEventType,
+} from './types';
 
 async function addColumnIfMissing(table: string, definition: string): Promise<void> {
   try {
-    await db.query(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+    await pool.query(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
   } catch (err) {
     const code = (err as { code?: string }).code;
     if (code !== 'ER_DUP_FIELDNAME') throw err;
@@ -18,7 +33,7 @@ let initialized = false;
 export async function initStorage(): Promise<void> {
   if (initialized) return;
 
-  await db.query(`
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS applications (
       guildId VARCHAR(32) NOT NULL,
       userId VARCHAR(32) NOT NULL,
@@ -37,7 +52,7 @@ export async function initStorage(): Promise<void> {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
-  await db.query(`
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS appeals (
       guildId VARCHAR(32) NOT NULL,
       userId VARCHAR(32) NOT NULL,
@@ -56,7 +71,7 @@ export async function initStorage(): Promise<void> {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
-  await db.query(`
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS counters (
       guildId VARCHAR(32) NOT NULL,
       name VARCHAR(64) NOT NULL,
@@ -65,7 +80,7 @@ export async function initStorage(): Promise<void> {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
-  await db.query(`
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS join_methods (
       guildId VARCHAR(32) NOT NULL,
       userId VARCHAR(32) NOT NULL,
@@ -75,7 +90,7 @@ export async function initStorage(): Promise<void> {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
-  await db.query(`
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS guild_settings (
       guildId VARCHAR(32) NOT NULL,
       \`key\` VARCHAR(64) NOT NULL,
@@ -84,11 +99,25 @@ export async function initStorage(): Promise<void> {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
-  await db.query(`
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS app_config (
       \`key\` VARCHAR(64) NOT NULL,
       value TEXT NOT NULL,
       PRIMARY KEY (\`key\`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_history (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      guildId VARCHAR(32) NOT NULL,
+      userId VARCHAR(32) NOT NULL,
+      type VARCHAR(32) NOT NULL,
+      timestamp BIGINT NOT NULL,
+      executorId VARCHAR(32) NULL,
+      reason TEXT NULL,
+      details TEXT NULL,
+      INDEX idx_guild_user_time (guildId, userId, timestamp)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
@@ -107,31 +136,32 @@ export async function initStorage(): Promise<void> {
 }
 
 export async function getGuildSettings(guildId: string): Promise<Record<string, string>> {
-  const [rows] = await db.execute<RowDataPacket[]>(
-    'SELECT `key`, value FROM guild_settings WHERE guildId = ?',
-    [guildId],
-  );
+  const rows = await db
+    .select({ key: guildSettings.key, value: guildSettings.value })
+    .from(guildSettings)
+    .where(eq(guildSettings.guildId, guildId));
+
   const out: Record<string, string> = {};
   for (const row of rows) {
-    out[row.key as string] = row.value as string;
+    out[row.key] = row.value;
   }
   return out;
 }
 
 export async function getAppConfigValue(key: string): Promise<string | undefined> {
-  const [rows] = await db.execute<RowDataPacket[]>(
-    'SELECT value FROM app_config WHERE `key` = ?',
-    [key],
-  );
-  return rows.length ? (rows[0].value as string) : undefined;
+  const rows = await db
+    .select({ value: appConfig.value })
+    .from(appConfig)
+    .where(eq(appConfig.key, key));
+
+  return rows.length ? rows[0].value : undefined;
 }
 
 export async function setAppConfigValue(key: string, value: string): Promise<void> {
-  await db.execute(
-    'INSERT INTO app_config (`key`, value) VALUES (?, ?) ' +
-      'ON DUPLICATE KEY UPDATE value = VALUES(value)',
-    [key, value],
-  );
+  await db
+    .insert(appConfig)
+    .values({ key, value })
+    .onDuplicateKeyUpdate({ set: { value } });
 }
 
 export async function saveJoinMethod(
@@ -139,26 +169,27 @@ export async function saveJoinMethod(
   userId: string,
   method: string,
 ): Promise<void> {
-  await db.execute(
-    `INSERT INTO join_methods (guildId, userId, method, joinedAt) VALUES (?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE method = VALUES(method), joinedAt = VALUES(joinedAt)`,
-    [guildId, userId, method, Date.now()],
-  );
+  const now = Date.now();
+  await db
+    .insert(joinMethods)
+    .values({ guildId, userId, method, joinedAt: now })
+    .onDuplicateKeyUpdate({ set: { method, joinedAt: now } });
 }
 
 export async function getJoinMethod(
   guildId: string,
   userId: string,
 ): Promise<string | undefined> {
-  const [rows] = await db.execute<RowDataPacket[]>(
-    'SELECT method FROM join_methods WHERE guildId = ? AND userId = ?',
-    [guildId, userId],
-  );
-  return rows.length ? (rows[0].method as string) : undefined;
+  const rows = await db
+    .select({ method: joinMethods.method })
+    .from(joinMethods)
+    .where(and(eq(joinMethods.guildId, guildId), eq(joinMethods.userId, userId)));
+
+  return rows.length ? rows[0].method : undefined;
 }
 
 async function nextNumber(guildId: string, name: string): Promise<number> {
-  const [result] = await db.execute<ResultSetHeader>(
+  const [result] = await pool.execute<ResultSetHeader>(
     `INSERT INTO counters (guildId, name, value) VALUES (?, ?, LAST_INSERT_ID(1))
      ON DUPLICATE KEY UPDATE value = LAST_INSERT_ID(value + 1)`,
     [guildId, name],
@@ -174,30 +205,14 @@ export function nextAppealNumber(guildId: string): Promise<number> {
   return nextNumber(guildId, 'appeal');
 }
 
-interface AppRow extends RowDataPacket {
-  userId: string;
-  username: string;
-  guildId: string;
-  answers: string;
-  submittedAt: number;
-  status: ApplicationStatus;
-  reviewMessageUrl: string | null;
-  reviewerId: string | null;
-  reason: string | null;
-  questionChannelId: string | null;
-  number: number | null;
-  joinMethod: string | null;
-  removedRoles: string | null;
-}
-
-function rowToApp(row: AppRow): Application {
+function rowToApp(row: typeof applications.$inferSelect): Application {
   return {
     userId: row.userId,
     username: row.username,
     guildId: row.guildId,
     answers: JSON.parse(row.answers),
     submittedAt: Number(row.submittedAt),
-    status: row.status,
+    status: row.status as ApplicationStatus,
     reviewMessageUrl: row.reviewMessageUrl ?? undefined,
     reviewerId: row.reviewerId ?? undefined,
     reason: row.reason ?? undefined,
@@ -208,117 +223,92 @@ function rowToApp(row: AppRow): Application {
   };
 }
 
-function appParams(app: Application): any[] {
-  return [
-    app.guildId,
-    app.userId,
-    app.username,
-    JSON.stringify(app.answers),
-    app.submittedAt,
-    app.status,
-    app.reviewMessageUrl ?? null,
-    app.reviewerId ?? null,
-    app.reason ?? null,
-    app.questionChannelId ?? null,
-    app.number ?? null,
-    app.joinMethod ?? null,
-    app.removedRoles ? JSON.stringify(app.removedRoles) : null,
-  ];
-}
-
-const APP_COLUMNS =
-  'guildId, userId, username, answers, submittedAt, status, reviewMessageUrl, reviewerId, reason, questionChannelId, number, joinMethod, removedRoles';
-const APP_PLACEHOLDERS = '?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?';
-const APP_UPDATE_ASSIGNMENTS = `
-  username = VALUES(username),
-  answers = VALUES(answers),
-  submittedAt = VALUES(submittedAt),
-  status = VALUES(status),
-  reviewMessageUrl = VALUES(reviewMessageUrl),
-  reviewerId = VALUES(reviewerId),
-  reason = VALUES(reason),
-  questionChannelId = VALUES(questionChannelId),
-  number = VALUES(number),
-  joinMethod = VALUES(joinMethod),
-  removedRoles = VALUES(removedRoles)
-`;
-
-const APP_UPDATE_SET = `
-  username = ?,
-  answers = ?,
-  submittedAt = ?,
-  status = ?,
-  reviewMessageUrl = ?,
-  reviewerId = ?,
-  reason = ?,
-  questionChannelId = ?,
-  number = ?,
-  joinMethod = ?,
-  removedRoles = ?
-`;
-
 export async function saveApplication(app: Application): Promise<void> {
-  await db.execute(
-    `INSERT INTO applications (${APP_COLUMNS}) VALUES (${APP_PLACEHOLDERS})
-     ON DUPLICATE KEY UPDATE ${APP_UPDATE_ASSIGNMENTS}`,
-    appParams(app),
-  );
+  const values = {
+    guildId: app.guildId,
+    userId: app.userId,
+    username: app.username,
+    answers: JSON.stringify(app.answers),
+    submittedAt: app.submittedAt,
+    status: app.status,
+    reviewMessageUrl: app.reviewMessageUrl ?? null,
+    reviewerId: app.reviewerId ?? null,
+    reason: app.reason ?? null,
+    questionChannelId: app.questionChannelId ?? null,
+    number: app.number ?? null,
+    joinMethod: app.joinMethod ?? null,
+    removedRoles: app.removedRoles ? JSON.stringify(app.removedRoles) : null,
+  };
+
+  await db
+    .insert(applications)
+    .values(values)
+    .onDuplicateKeyUpdate({
+      set: {
+        username: values.username,
+        answers: values.answers,
+        submittedAt: values.submittedAt,
+        status: values.status,
+        reviewMessageUrl: values.reviewMessageUrl,
+        reviewerId: values.reviewerId,
+        reason: values.reason,
+        questionChannelId: values.questionChannelId,
+        number: values.number,
+        joinMethod: values.joinMethod,
+        removedRoles: values.removedRoles,
+      },
+    });
 }
 
 export async function reserveApplication(app: Application): Promise<boolean> {
-  const conn = await db.getConnection();
-  try {
-    await conn.beginTransaction();
-    const [rows] = await conn.execute<RowDataPacket[]>(
-      'SELECT status FROM applications WHERE guildId = ? AND userId = ? FOR UPDATE',
-      [app.guildId, app.userId],
-    );
+  return await db.transaction(async (tx) => {
+    const rows = await tx
+      .select({ status: applications.status })
+      .from(applications)
+      .where(and(eq(applications.guildId, app.guildId), eq(applications.userId, app.userId)))
+      .for('update');
+
     if (rows.length && rows[0].status === 'pending') {
-      await conn.rollback();
       return false;
     }
-    if (rows.length) {
-      await conn.execute(
-        `UPDATE applications SET ${APP_UPDATE_SET} WHERE guildId = ? AND userId = ?`,
-        [...appUpdateParams(app), app.guildId, app.userId],
-      );
-    } else {
-      await conn.execute(
-        `INSERT INTO applications (${APP_COLUMNS}) VALUES (${APP_PLACEHOLDERS})`,
-        appParams(app),
-      );
-    }
-    await conn.commit();
+
+    const values = {
+      guildId: app.guildId,
+      userId: app.userId,
+      username: app.username,
+      answers: JSON.stringify(app.answers),
+      submittedAt: app.submittedAt,
+      status: app.status,
+      reviewMessageUrl: app.reviewMessageUrl ?? null,
+      reviewerId: app.reviewerId ?? null,
+      reason: app.reason ?? null,
+      questionChannelId: app.questionChannelId ?? null,
+      number: app.number ?? null,
+      joinMethod: app.joinMethod ?? null,
+      removedRoles: app.removedRoles ? JSON.stringify(app.removedRoles) : null,
+    };
+
+    await tx
+      .insert(applications)
+      .values(values)
+      .onDuplicateKeyUpdate({
+        set: {
+          username: values.username,
+          answers: values.answers,
+          submittedAt: values.submittedAt,
+          status: values.status,
+          reviewMessageUrl: values.reviewMessageUrl,
+          reviewerId: values.reviewerId,
+          reason: values.reason,
+          questionChannelId: values.questionChannelId,
+          number: values.number,
+          joinMethod: values.joinMethod,
+          removedRoles: values.removedRoles,
+        },
+      });
+
     return true;
-  } catch (err) {
-    await safeRollback(conn);
-    throw err;
-  } finally {
-    conn.release();
-  }
-}
-
-function appUpdateParams(app: Application): any[] {
-  return [
-    app.username,
-    JSON.stringify(app.answers),
-    app.submittedAt,
-    app.status,
-    app.reviewMessageUrl ?? null,
-    app.reviewerId ?? null,
-    app.reason ?? null,
-    app.questionChannelId ?? null,
-    app.number ?? null,
-    app.joinMethod ?? null,
-    app.removedRoles ? JSON.stringify(app.removedRoles) : null,
-  ];
-}
-
-async function safeRollback(conn: PoolConnection): Promise<void> {
-  try {
-    await conn.rollback();
-  } catch {
-  }
+  });
 }
 
 export async function claimApplicationQuestionChannel(
@@ -327,7 +317,7 @@ export async function claimApplicationQuestionChannel(
   newId: string,
   oldId: string | null,
 ): Promise<boolean> {
-  const [result] = await db.execute<ResultSetHeader>(
+  const [result] = await pool.execute<ResultSetHeader>(
     'UPDATE applications SET questionChannelId = ? WHERE guildId = ? AND userId = ? AND questionChannelId <=> ?',
     [newId, guildId, userId, oldId],
   );
@@ -338,38 +328,48 @@ export async function getApplication(
   guildId: string,
   userId: string,
 ): Promise<Application | undefined> {
-  const [rows] = await db.execute<AppRow[]>(
-    'SELECT * FROM applications WHERE guildId = ? AND userId = ?',
-    [guildId, userId],
-  );
+  const rows = await db
+    .select()
+    .from(applications)
+    .where(and(eq(applications.guildId, guildId), eq(applications.userId, userId)));
+
   return rows.length ? rowToApp(rows[0]) : undefined;
 }
 
 export async function getApplicationByQuestionChannel(
   channelId: string,
 ): Promise<Application | undefined> {
-  const [rows] = await db.execute<AppRow[]>(
-    'SELECT * FROM applications WHERE questionChannelId = ?',
-    [channelId],
-  );
+  const rows = await db
+    .select()
+    .from(applications)
+    .where(eq(applications.questionChannelId, channelId));
+
   return rows.length ? rowToApp(rows[0]) : undefined;
 }
 
 export async function listPendingApplications(guildId: string): Promise<Application[]> {
-  const [rows] = await db.execute<AppRow[]>(
-    "SELECT * FROM applications WHERE guildId = ? AND status = 'pending' ORDER BY submittedAt ASC",
-    [guildId],
-  );
+  const rows = await db
+    .select()
+    .from(applications)
+    .where(and(eq(applications.guildId, guildId), eq(applications.status, 'pending')))
+    .orderBy(asc(applications.submittedAt));
+
   return rows.map(rowToApp);
 }
 
 export async function listApplicationsWithQuestionChannel(
   guildId: string,
 ): Promise<Application[]> {
-  const [rows] = await db.execute<AppRow[]>(
-    'SELECT * FROM applications WHERE guildId = ? AND questionChannelId IS NOT NULL',
-    [guildId],
-  );
+  const rows = await db
+    .select()
+    .from(applications)
+    .where(
+      and(
+        eq(applications.guildId, guildId),
+        sql`${applications.questionChannelId} IS NOT NULL`,
+      ),
+    );
+
   return rows.map(rowToApp);
 }
 
@@ -392,49 +392,46 @@ export async function claimApplication(
   reviewerId: string,
   reason?: string,
 ): Promise<boolean> {
-  const [result] = await db.execute<ResultSetHeader>(
-    `UPDATE applications SET status = ?, reviewerId = ?, reason = ?
-     WHERE guildId = ? AND userId = ? AND status = 'pending'`,
-    [to, reviewerId, reason ?? null, guildId, userId],
-  );
-  return result.affectedRows === 1;
+  const result = await db
+    .update(applications)
+    .set({ status: to, reviewerId, reason: reason ?? null })
+    .where(
+      and(
+        eq(applications.guildId, guildId),
+        eq(applications.userId, userId),
+        eq(applications.status, 'pending'),
+      ),
+    );
+
+  return result[0].affectedRows === 1;
 }
 
 export async function markApplicationLeft(
   guildId: string,
   userId: string,
 ): Promise<boolean> {
-  const [result] = await db.execute<ResultSetHeader>(
-    "UPDATE applications SET status = 'left' WHERE guildId = ? AND userId = ? AND status = 'pending'",
-    [guildId, userId],
-  );
-  return result.affectedRows === 1;
+  const result = await db
+    .update(applications)
+    .set({ status: 'left' })
+    .where(
+      and(
+        eq(applications.guildId, guildId),
+        eq(applications.userId, userId),
+        eq(applications.status, 'pending'),
+      ),
+    );
+
+  return result[0].affectedRows === 1;
 }
 
-interface AppealRow extends RowDataPacket {
-  userId: string;
-  guildId: string;
-  username: string;
-  text: string;
-  submittedAt: number;
-  status: AppealStatus;
-  reviewMessageUrl: string | null;
-  reviewerId: string | null;
-  reason: string | null;
-  resolvedAt: number | null;
-  questionChannelId: string | null;
-  blacklistReason: string | null;
-  number: number | null;
-}
-
-function rowToAppeal(row: AppealRow): Appeal {
+function rowToAppeal(row: typeof appeals.$inferSelect): Appeal {
   return {
     userId: row.userId,
     guildId: row.guildId,
     username: row.username,
     text: row.text,
     submittedAt: Number(row.submittedAt),
-    status: row.status,
+    status: row.status as AppealStatus,
     reviewMessageUrl: row.reviewMessageUrl ?? undefined,
     reviewerId: row.reviewerId ?? undefined,
     reason: row.reason ?? undefined,
@@ -445,96 +442,92 @@ function rowToAppeal(row: AppealRow): Appeal {
   };
 }
 
-function appealUpdateParams(appeal: Appeal): any[] {
-  return [
-    appeal.username,
-    appeal.text,
-    appeal.submittedAt,
-    appeal.status,
-    appeal.reviewMessageUrl ?? null,
-    appeal.reviewerId ?? null,
-    appeal.reason ?? null,
-    appeal.resolvedAt ?? null,
-    appeal.questionChannelId ?? null,
-    appeal.blacklistReason ?? null,
-    appeal.number ?? null,
-  ];
-}
-
-function appealParams(appeal: Appeal): any[] {
-  return [appeal.guildId, appeal.userId, ...appealUpdateParams(appeal)];
-}
-
-const APPEAL_COLUMNS =
-  'guildId, userId, username, text, submittedAt, status, reviewMessageUrl, reviewerId, reason, resolvedAt, questionChannelId, blacklistReason, number';
-const APPEAL_PLACEHOLDERS = '?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?';
-const APPEAL_UPDATE_ASSIGNMENTS = `
-  username = VALUES(username),
-  text = VALUES(text),
-  submittedAt = VALUES(submittedAt),
-  status = VALUES(status),
-  reviewMessageUrl = VALUES(reviewMessageUrl),
-  reviewerId = VALUES(reviewerId),
-  reason = VALUES(reason),
-  resolvedAt = VALUES(resolvedAt),
-  questionChannelId = VALUES(questionChannelId),
-  blacklistReason = VALUES(blacklistReason),
-  number = VALUES(number)
-`;
-
-const APPEAL_UPDATE_SET = `
-  username = ?,
-  text = ?,
-  submittedAt = ?,
-  status = ?,
-  reviewMessageUrl = ?,
-  reviewerId = ?,
-  reason = ?,
-  resolvedAt = ?,
-  questionChannelId = ?,
-  blacklistReason = ?,
-  number = ?
-`;
-
 export async function saveAppeal(appeal: Appeal): Promise<void> {
-  await db.execute(
-    `INSERT INTO appeals (${APPEAL_COLUMNS}) VALUES (${APPEAL_PLACEHOLDERS})
-     ON DUPLICATE KEY UPDATE ${APPEAL_UPDATE_ASSIGNMENTS}`,
-    appealParams(appeal),
-  );
+  const values = {
+    guildId: appeal.guildId,
+    userId: appeal.userId,
+    username: appeal.username,
+    text: appeal.text,
+    submittedAt: appeal.submittedAt,
+    status: appeal.status,
+    reviewMessageUrl: appeal.reviewMessageUrl ?? null,
+    reviewerId: appeal.reviewerId ?? null,
+    reason: appeal.reason ?? null,
+    resolvedAt: appeal.resolvedAt ?? null,
+    questionChannelId: appeal.questionChannelId ?? null,
+    blacklistReason: appeal.blacklistReason ?? null,
+    number: appeal.number ?? null,
+  };
+
+  await db
+    .insert(appeals)
+    .values(values)
+    .onDuplicateKeyUpdate({
+      set: {
+        username: values.username,
+        text: values.text,
+        submittedAt: values.submittedAt,
+        status: values.status,
+        reviewMessageUrl: values.reviewMessageUrl,
+        reviewerId: values.reviewerId,
+        reason: values.reason,
+        resolvedAt: values.resolvedAt,
+        questionChannelId: values.questionChannelId,
+        blacklistReason: values.blacklistReason,
+        number: values.number,
+      },
+    });
 }
 
 export async function reserveAppeal(appeal: Appeal): Promise<boolean> {
-  const conn = await db.getConnection();
-  try {
-    await conn.beginTransaction();
-    const [rows] = await conn.execute<RowDataPacket[]>(
-      'SELECT status FROM appeals WHERE guildId = ? AND userId = ? FOR UPDATE',
-      [appeal.guildId, appeal.userId],
-    );
+  return await db.transaction(async (tx) => {
+    const rows = await tx
+      .select({ status: appeals.status })
+      .from(appeals)
+      .where(and(eq(appeals.guildId, appeal.guildId), eq(appeals.userId, appeal.userId)))
+      .for('update');
+
     if (rows.length && rows[0].status === 'pending') {
-      await conn.rollback();
       return false;
     }
-    if (rows.length) {
-      await conn.execute(
-        `UPDATE appeals SET ${APPEAL_UPDATE_SET} WHERE guildId = ? AND userId = ?`,
-        [...appealUpdateParams(appeal), appeal.guildId, appeal.userId],
-      );
-    } else {
-      await conn.execute(
-        `INSERT INTO appeals (${APPEAL_COLUMNS}) VALUES (${APPEAL_PLACEHOLDERS})`,
-        appealParams(appeal),
-      );
-    }
-    await conn.commit();
+
+    const values = {
+      guildId: appeal.guildId,
+      userId: appeal.userId,
+      username: appeal.username,
+      text: appeal.text,
+      submittedAt: appeal.submittedAt,
+      status: appeal.status,
+      reviewMessageUrl: appeal.reviewMessageUrl ?? null,
+      reviewerId: appeal.reviewerId ?? null,
+      reason: appeal.reason ?? null,
+      resolvedAt: appeal.resolvedAt ?? null,
+      questionChannelId: appeal.questionChannelId ?? null,
+      blacklistReason: appeal.blacklistReason ?? null,
+      number: appeal.number ?? null,
+    };
+
+    await tx
+      .insert(appeals)
+      .values(values)
+      .onDuplicateKeyUpdate({
+        set: {
+          username: values.username,
+          text: values.text,
+          submittedAt: values.submittedAt,
+          status: values.status,
+          reviewMessageUrl: values.reviewMessageUrl,
+          reviewerId: values.reviewerId,
+          reason: values.reason,
+          resolvedAt: values.resolvedAt,
+          questionChannelId: values.questionChannelId,
+          blacklistReason: values.blacklistReason,
+          number: values.number,
+        },
+      });
+
     return true;
-  } catch (err) {
-    await safeRollback(conn);
-    throw err;
-  } finally {
-    conn.release();
-  }
+  });
 }
 
 export async function claimAppealQuestionChannel(
@@ -543,7 +536,7 @@ export async function claimAppealQuestionChannel(
   newId: string,
   oldId: string | null,
 ): Promise<boolean> {
-  const [result] = await db.execute<ResultSetHeader>(
+  const [result] = await pool.execute<ResultSetHeader>(
     'UPDATE appeals SET questionChannelId = ? WHERE guildId = ? AND userId = ? AND questionChannelId <=> ?',
     [newId, guildId, userId, oldId],
   );
@@ -554,36 +547,43 @@ export async function getAppeal(
   guildId: string,
   userId: string,
 ): Promise<Appeal | undefined> {
-  const [rows] = await db.execute<AppealRow[]>(
-    'SELECT * FROM appeals WHERE guildId = ? AND userId = ?',
-    [guildId, userId],
-  );
+  const rows = await db
+    .select()
+    .from(appeals)
+    .where(and(eq(appeals.guildId, guildId), eq(appeals.userId, userId)));
+
   return rows.length ? rowToAppeal(rows[0]) : undefined;
 }
 
 export async function getAppealByQuestionChannel(
   channelId: string,
 ): Promise<Appeal | undefined> {
-  const [rows] = await db.execute<AppealRow[]>(
-    'SELECT * FROM appeals WHERE questionChannelId = ?',
-    [channelId],
-  );
+  const rows = await db
+    .select()
+    .from(appeals)
+    .where(eq(appeals.questionChannelId, channelId));
+
   return rows.length ? rowToAppeal(rows[0]) : undefined;
 }
 
 export async function listPendingAppeals(guildId: string): Promise<Appeal[]> {
-  const [rows] = await db.execute<AppealRow[]>(
-    "SELECT * FROM appeals WHERE guildId = ? AND status = 'pending' ORDER BY submittedAt ASC",
-    [guildId],
-  );
+  const rows = await db
+    .select()
+    .from(appeals)
+    .where(and(eq(appeals.guildId, guildId), eq(appeals.status, 'pending')))
+    .orderBy(asc(appeals.submittedAt));
+
   return rows.map(rowToAppeal);
 }
 
 export async function listAppealsWithQuestionChannel(guildId: string): Promise<Appeal[]> {
-  const [rows] = await db.execute<AppealRow[]>(
-    'SELECT * FROM appeals WHERE guildId = ? AND questionChannelId IS NOT NULL',
-    [guildId],
-  );
+  const rows = await db
+    .select()
+    .from(appeals)
+    .where(
+      and(eq(appeals.guildId, guildId), sql`${appeals.questionChannelId} IS NOT NULL`),
+    );
+
   return rows.map(rowToAppeal);
 }
 
@@ -607,21 +607,161 @@ export async function claimAppeal(
   reason?: string,
   resolvedAt: number = Date.now(),
 ): Promise<boolean> {
-  const [result] = await db.execute<ResultSetHeader>(
-    `UPDATE appeals SET status = ?, reviewerId = ?, reason = ?, resolvedAt = ?
-     WHERE guildId = ? AND userId = ? AND status = 'pending'`,
-    [to, reviewerId, reason ?? null, resolvedAt, guildId, userId],
-  );
-  return result.affectedRows === 1;
+  const result = await db
+    .update(appeals)
+    .set({ status: to, reviewerId, reason: reason ?? null, resolvedAt })
+    .where(
+      and(
+        eq(appeals.guildId, guildId),
+        eq(appeals.userId, userId),
+        eq(appeals.status, 'pending'),
+      ),
+    );
+
+  return result[0].affectedRows === 1;
 }
 
 export async function markAppealLeft(
   guildId: string,
   userId: string,
 ): Promise<boolean> {
-  const [result] = await db.execute<ResultSetHeader>(
-    "UPDATE appeals SET status = 'left' WHERE guildId = ? AND userId = ? AND status = 'pending'",
-    [guildId, userId],
-  );
-  return result.affectedRows === 1;
+  const result = await db
+    .update(appeals)
+    .set({ status: 'left' })
+    .where(
+      and(
+        eq(appeals.guildId, guildId),
+        eq(appeals.userId, userId),
+        eq(appeals.status, 'pending'),
+      ),
+    );
+
+  return result[0].affectedRows === 1;
+}
+
+export async function saveHistoryRecord(record: HistoryRecord): Promise<void> {
+  await db.insert(userHistory).values({
+    guildId: record.guildId,
+    userId: record.userId,
+    type: record.type,
+    timestamp: record.timestamp,
+    executorId: record.executorId ?? null,
+    reason: record.reason ?? null,
+    details: record.details ?? null,
+  });
+}
+
+export async function getUserHistory(
+  guildId: string,
+  userId: string,
+): Promise<HistoryRecord[]> {
+  const rows = await db
+    .select()
+    .from(userHistory)
+    .where(and(eq(userHistory.guildId, guildId), eq(userHistory.userId, userId)))
+    .orderBy(desc(userHistory.timestamp));
+
+  if (rows.length > 0) {
+    return rows.map((r) => ({
+      id: r.id,
+      guildId: r.guildId,
+      userId: r.userId,
+      type: r.type as HistoryEventType,
+      timestamp: Number(r.timestamp),
+      executorId: r.executorId ?? undefined,
+      reason: r.reason ?? undefined,
+      details: r.details ?? undefined,
+    }));
+  }
+
+  const legacy: HistoryRecord[] = [];
+  const app = await getApplication(guildId, userId);
+  if (app) {
+    legacy.push({
+      guildId,
+      userId,
+      type: 'application_submitted',
+      timestamp: app.submittedAt,
+    });
+    if (app.status === 'approved') {
+      legacy.push({
+        guildId,
+        userId,
+        type: 'application_approved',
+        timestamp: app.submittedAt + 1,
+        executorId: app.reviewerId,
+      });
+    } else if (app.status === 'rejected') {
+      legacy.push({
+        guildId,
+        userId,
+        type: 'application_rejected',
+        timestamp: app.submittedAt + 1,
+        executorId: app.reviewerId,
+        reason: app.reason,
+      });
+    } else if (app.status === 'blacklisted') {
+      legacy.push({
+        guildId,
+        userId,
+        type: 'application_blacklisted',
+        timestamp: app.submittedAt + 1,
+        executorId: app.reviewerId,
+        reason: app.reason,
+      });
+    } else if (app.status === 'expired') {
+      legacy.push({
+        guildId,
+        userId,
+        type: 'application_expired',
+        timestamp: app.submittedAt + 1,
+      });
+    } else if (app.status === 'left') {
+      legacy.push({
+        guildId,
+        userId,
+        type: 'application_left',
+        timestamp: app.submittedAt + 1,
+      });
+    }
+  }
+
+  const appeal = await getAppeal(guildId, userId);
+  if (appeal) {
+    legacy.push({
+      guildId,
+      userId,
+      type: 'appeal_submitted',
+      timestamp: appeal.submittedAt,
+    });
+    if (appeal.status === 'amnestied') {
+      legacy.push({
+        guildId,
+        userId,
+        type: 'appeal_amnestied',
+        timestamp: appeal.resolvedAt ?? (appeal.submittedAt + 1),
+        executorId: appeal.reviewerId,
+        reason: appeal.reason,
+      });
+    } else if (appeal.status === 'denied') {
+      legacy.push({
+        guildId,
+        userId,
+        type: 'appeal_denied',
+        timestamp: appeal.resolvedAt ?? (appeal.submittedAt + 1),
+        executorId: appeal.reviewerId,
+        reason: appeal.reason,
+      });
+    } else if (appeal.status === 'left') {
+      legacy.push({
+        guildId,
+        userId,
+        type: 'appeal_left',
+        timestamp: appeal.submittedAt + 1,
+      });
+    }
+  }
+
+  legacy.sort((a, b) => b.timestamp - a.timestamp);
+  return legacy;
 }

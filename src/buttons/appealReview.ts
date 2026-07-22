@@ -16,6 +16,7 @@ import {
 	claimAppealQuestionChannel,
 	getApplication,
 	updateApplication,
+	saveHistoryRecord,
 } from '../storage';
 import {
 	buildResolvedEmbed,
@@ -171,6 +172,14 @@ const handler: ButtonHandler = {
 			});
 			return;
 		}
+
+		await saveHistoryRecord({
+			guildId,
+			userId,
+			type: action === 'amnesty' ? 'appeal_amnestied' : 'appeal_denied',
+			timestamp: Date.now(),
+			executorId: interaction.user.id,
+		});
 
 		const guild = getGuild(interaction);
 		const member = guild ? await guild.members.fetch(userId).catch(() => null) : null;

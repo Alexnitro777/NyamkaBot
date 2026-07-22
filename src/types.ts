@@ -95,3 +95,28 @@ export interface Appeal {
   blacklistReason?: string;
   number?: number;
 }
+
+export type HistoryEventType =
+  | 'application_submitted'
+  | 'application_approved'
+  | 'application_rejected'
+  | 'application_blacklisted'
+  | 'application_expired'
+  | 'application_left'
+  | 'appeal_submitted'
+  | 'appeal_amnestied'
+  | 'appeal_denied'
+  | 'appeal_left'
+  | 'chsp_added'
+  | 'chsp_removed';
+
+export interface HistoryRecord {
+  id?: number;
+  guildId: string;
+  userId: string;
+  type: HistoryEventType;
+  timestamp: number;
+  executorId?: string;
+  reason?: string;
+  details?: string;
+}

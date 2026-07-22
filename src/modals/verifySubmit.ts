@@ -8,6 +8,7 @@ import {
   getJoinMethod,
   saveApplication,
   updateApplication,
+  saveHistoryRecord,
 } from '../storage';
 import {
   buildApplicationEmbed,
@@ -92,6 +93,15 @@ const handler: ModalHandler = {
         });
       }
 
+      await saveHistoryRecord({
+        guildId,
+        userId: interaction.user.id,
+        type: 'application_blacklisted',
+        timestamp: Date.now(),
+        executorId: interaction.client.user.id,
+        reason,
+      });
+
       await submitter
         ?.send({
           embeds: [
@@ -159,12 +169,13 @@ const handler: ModalHandler = {
       return;
     }
 
+    const now = Date.now();
     const reserved = await reserveApplication({
       userId: interaction.user.id,
       username: interaction.user.tag,
       guildId,
       answers,
-      submittedAt: Date.now(),
+      submittedAt: now,
       status: 'pending',
       reviewMessageUrl: msg.url,
       number,

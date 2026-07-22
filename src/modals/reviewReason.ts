@@ -1,6 +1,6 @@
 import { ModalSubmitInteraction, EmbedBuilder, TextChannel, MessageFlags } from 'discord.js';
 import { ModalHandler, GuildConfig } from '../types';
-import { getApplication, claimApplication, updateApplication } from '../storage';
+import { getApplication, claimApplication, updateApplication, saveHistoryRecord } from '../storage';
 import { buildResolvedEmbed, buildDmEmbed, postDecisionMessage, buildProcessedButtonRow } from '../ui';
 import { blacklistMemberRoles } from '../roles';
 
@@ -29,6 +29,15 @@ const handler: ModalHandler = {
       });
       return;
     }
+
+    await saveHistoryRecord({
+      guildId,
+      userId,
+      type: action === 'blacklist' ? 'application_blacklisted' : 'application_rejected',
+      timestamp: Date.now(),
+      executorId: interaction.user.id,
+      reason,
+    });
 
     const guild = interaction.guild;
     const member = guild ? await guild.members.fetch(userId).catch(() => null) : null;

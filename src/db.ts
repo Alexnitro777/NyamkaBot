@@ -1,4 +1,6 @@
 import mysql from 'mysql2/promise';
+import { drizzle } from 'drizzle-orm/mysql2';
+import * as schema from './schema';
 
 function requiredEnv(name: string): string {
   const value = process.env[name];
@@ -40,6 +42,8 @@ export const pool = mysql.createPool({
   charset: 'utf8mb4',
   supportBigNumbers: true,
 });
+
+export const db = drizzle(pool, { schema, mode: 'default' });
 
 export async function closeDb(): Promise<void> {
   try {

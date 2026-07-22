@@ -8,7 +8,7 @@ import {
 	Client,
 	TextChannel,
 } from 'discord.js';
-import { Application } from './types';
+import { Application, HistoryRecord, HistoryEventType } from './types';
 import { verifyQuestions } from './questions';
 
 export function buildApplicationEmbed(
@@ -393,4 +393,94 @@ export async function postDecisionMessage(
 	} catch (e) {
 		console.error('[decision] failed to post decision message', e);
 	}
+}
+
+const HISTORY_TITLE_MAP: Record<HistoryEventType, string> = {
+	application_submitted: '📝 **Подача заявки на верификацию**',
+	application_approved: '🟢 **Верификация одобрена**',
+	application_rejected: '🔴 **Анкета отклонена**',
+	application_blacklisted: '🚫 **Анкета отклонена (выдан ЧС)**',
+	application_expired: '⏱️ **Срок ожидания анкеты истёк**',
+	application_left: '🚪 **Участник покинул сервер (верификация)**',
+	appeal_submitted: '📜 **Подача апелляции**',
+	appeal_amnestied: '🕊️ **Апелляция принята (Амнистия)**',
+	appeal_denied: '❌ **В апелляции отказано**',
+	appeal_left: '🚪 **Участник покинул сервер (апелляция)**',
+	chsp_added: '⛔ **Занесение в ЧС (ЧСП)**',
+	chsp_removed: '🔓 **Снятие с ЧС (ЧСП)**',
+};
+
+const HISTORY_PAGE_SIZE = 5;
+
+export function buildHistoryView(
+	items: HistoryRecord[],
+	targetUser: { id: string; username?: string; tag?: string },
+	requestedPage: number,
+): { embed: EmbedBuilder; row?: ActionRowBuilder<ButtonBuilder> } {
+	const pages = Math.max(1, Math.ceil(items.length / HISTORY_PAGE_SIZE));
+	const page = Math.min(Math.max(0, requestedPage), pages - 1);
+	const start = page * HISTORY_PAGE_SIZE;
+	const slice = items.slice(start, start + HISTORY_PAGE_SIZE);
+
+	const displayName = targetUser.tag ?? targetUser.username ?? targetUser.id;
+
+	const embed = new EmbedBuilder()
+		.setTitle(`📜 История действий — ${displayName}`)
+		.setColor(0x5865f2)
+		.setFooter({ text: `ID: ${targetUser.id} • Страница ${page + 1}/${pages}` })
+		.setTimestamp();
+
+	if (items.length === 0) {
+		embed.setDescription(`У участника <@${targetUser.id}> нет сохранённых действий.`);
+		return { embed };
+	}
+
+	embed.setDescription(`Участник: <@${targetUser.id}>\nВсего записей: **${items.length}** (сверху самые новые)\n\u200b`);
+
+	slice.forEach((item, idx) => {
+		const itemNum = items.length - (start + idx);
+		const ts = Math.floor(item.timestamp / 1000);
+		const title = HISTORY_TITLE_MAP[item.type] ?? `📌 **${item.type}**`;
+
+		let fieldBody = `<t:${ts}:f> (<t:${ts}:R>)`;
+		if (item.executorId) {
+			fieldBody += `\n👤 **Модератор:** <@${item.executorId}>`;
+		}
+		if (item.reason) {
+			const truncated = item.reason.length > 300 ? item.reason.slice(0, 300) + '...' : item.reason;
+			fieldBody += `\n💬 **Причина:** \`${truncated}\``;
+		}
+		if (item.details) {
+			fieldBody += `\nℹ️ ${item.details}`;
+		}
+
+		embed.addFields({
+			name: `#${itemNum} — ${title}`,
+			value: fieldBody,
+			inline: false,
+		});
+	});
+
+	let row: ActionRowBuilder<ButtonBuilder> | undefined;
+	if (pages > 1) {
+		row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+			new ButtonBuilder()
+				.setCustomId(`history:page:${targetUser.id}:${page - 1}`)
+				.setLabel('◀ Назад')
+				.setStyle(ButtonStyle.Secondary)
+				.setDisabled(page <= 0),
+			new ButtonBuilder()
+				.setCustomId(`history:pageinfo:${targetUser.id}`)
+				.setLabel(`${page + 1} / ${pages}`)
+				.setStyle(ButtonStyle.Secondary)
+				.setDisabled(true),
+			new ButtonBuilder()
+				.setCustomId(`history:page:${targetUser.id}:${page + 1}`)
+				.setLabel('Вперёд ▶')
+				.setStyle(ButtonStyle.Secondary)
+				.setDisabled(page >= pages - 1),
+		);
+	}
+
+	return { embed, row };
 }
