@@ -187,7 +187,7 @@ export function buildReviewButtons(
 		new ButtonBuilder()
 			.setCustomId(`review:blacklist:${userId}`)
 			.setLabel('ЧС')
-			.setStyle(ButtonStyle.Secondary)
+			.setStyle(ButtonStyle.Danger)
 			.setEmoji('🚫'),
 	);
 }

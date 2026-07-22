@@ -10,6 +10,7 @@ import {
 	ChannelType,
 	PermissionFlagsBits,
 	MessageFlags,
+	TextChannel,
 } from 'discord.js';
 import { ButtonHandler, GuildConfig } from '../types';
 import {
@@ -30,11 +31,17 @@ import {
 import { hasButtonAccess, getGuild } from '../permissions';
 
 const handler: ButtonHandler = {
-	customId: /^review:(approve|reject|question|blacklist):\d+$/,
+	customId: /^review:(approve|confirm_approve|reject|question|blacklist):\d+$|^review:cancel$/,
 
 	async execute(interaction: ButtonInteraction, gc: GuildConfig): Promise<void> {
 		if (!hasButtonAccess(interaction, gc, 'staff')) {
 			await interaction.reply({ content: 'Недостаточно прав.', flags: MessageFlags.Ephemeral });
+			return;
+		}
+
+		if (interaction.customId === 'review:cancel') {
+			await interaction.deferUpdate();
+			await interaction.deleteReply();
 			return;
 		}
 
@@ -58,6 +65,32 @@ const handler: ButtonHandler = {
 		if (app.status !== 'pending') {
 			await interaction.reply({
 				content: `Заявка уже обработана (${app.status}).`,
+				flags: MessageFlags.Ephemeral,
+			});
+			return;
+		}
+
+		if (action === 'approve') {
+			const embed = new EmbedBuilder()
+				.setTitle('Подтверждение действия')
+				.setDescription(`Вы действительно хотите принять анкету пользователя <@${userId}>?`)
+				.setColor(0x5865f2);
+
+			const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+				new ButtonBuilder()
+					.setCustomId(`review:confirm_approve:${userId}`)
+					.setLabel('Подтвердить')
+					.setStyle(ButtonStyle.Success)
+					.setEmoji('✅'),
+				new ButtonBuilder()
+					.setCustomId('review:cancel')
+					.setLabel('Отмена')
+					.setStyle(ButtonStyle.Danger),
+			);
+
+			await interaction.reply({
+				embeds: [embed],
+				components: [row],
 				flags: MessageFlags.Ephemeral,
 			});
 			return;
@@ -173,110 +206,128 @@ const handler: ButtonHandler = {
 			return;
 		}
 
-		await interaction.deferUpdate();
+		if (action === 'confirm_approve') {
+			await interaction.deferUpdate();
 
-		const member = await guild.members.fetch(userId).catch(() => null);
-		if (!member) {
-			await interaction.followUp({
-				content: 'Пользователь покинул сервер.',
-				flags: MessageFlags.Ephemeral,
-			});
-			return;
-		}
-
-		const claimed = await claimApplication(guildId, userId, 'approved', interaction.user.id);
-		if (!claimed) {
-			const fresh = await getApplication(guildId, userId);
-			await interaction.followUp({
-				content: `Заявка уже обработана (${fresh?.status ?? 'не найдена'}).`,
-				flags: MessageFlags.Ephemeral,
-			});
-			return;
-		}
-
-		try {
-			await member.roles.add(gc.roles.verified);
-		} catch (e) {
-			console.error('[review] roles.add failed', e);
-			await updateApplication(guildId, userId, { status: 'pending', reviewerId: undefined });
-			await interaction.followUp({
-				content:
-					'❌ Не удалось выдать роль — проверьте, что роль бота выше выдаваемой. Статус заявки возвращён в ожидание.',
-				flags: MessageFlags.Ephemeral,
-			});
-			return;
-		}
-
-		await saveHistoryRecord({
-			guildId,
-			userId,
-			type: 'application_approved',
-			timestamp: Date.now(),
-			executorId: interaction.user.id,
-			reviewMessageUrl: app?.reviewMessageUrl ?? interaction.message.url,
-		});
-
-		const dmOk = await member
-			.send({
-				embeds: [buildDmEmbed('✅ Заявка одобрена', 'Добро пожаловать на сервер!', 0x57f287)],
-			})
-			.then(() => true)
-			.catch(() => false);
-
-		const resolved = buildResolvedEmbed(
-			EmbedBuilder.from(interaction.message.embeds[0]),
-			'Принято',
-			0x57f287,
-			interaction.user.id,
-		);
-		await interaction.editReply({
-			embeds: [resolved],
-			components: [buildProcessedButtonRow('application')],
-		});
-
-		await postDecisionMessage(interaction.client, gc.channels.decisions, 'application', {
-			label: 'Принято',
-			color: 0x57f287,
-			reviewerId: interaction.user.id,
-			targetUserId: userId,
-			reviewMessageUrl: app.reviewMessageUrl ?? interaction.message.url,
-			number: app.number,
-		});
-
-		if (app.questionChannelId) {
-			const questionChannel = await guild.channels.fetch(app.questionChannelId).catch(() => null);
-			await questionChannel?.delete().catch((e) => {
-				console.error('[review] failed to delete question channel', e);
-				return null;
-			});
-			await updateApplication(guildId, userId, { questionChannelId: undefined });
-		}
-
-		if (gc.channels.welcome) {
-			try {
-				const welcomeChannel = await guild.channels.fetch(gc.channels.welcome);
-				if (welcomeChannel?.isTextBased()) {
-					const pingMessage = await welcomeChannel.send({
-						content: `<@${userId}>`,
-						allowedMentions: { users: [userId] },
-					});
-					await pingMessage.delete().catch(() => null);
-					await welcomeChannel.send({
-						embeds: [buildWelcomeEmbed(member)],
-					});
-				}
-			} catch (e) {
-				console.error('[review] welcome message failed', e);
+			const member = await guild.members.fetch(userId).catch(() => null);
+			if (!member) {
+				await interaction.followUp({
+					content: 'Пользователь покинул сервер.',
+					flags: MessageFlags.Ephemeral,
+				});
+				return;
 			}
-		}
 
-		if (!dmOk) {
-			await interaction.followUp({
-				content: '⚠️ Роль выдана, но отправить ЛС не удалось (закрыты личные сообщения).',
-				flags: MessageFlags.Ephemeral,
+			const claimed = await claimApplication(guildId, userId, 'approved', interaction.user.id);
+			if (!claimed) {
+				const fresh = await getApplication(guildId, userId);
+				await interaction.followUp({
+					content: `Заявка уже обработана (${fresh?.status ?? 'не найдена'}).`,
+					flags: MessageFlags.Ephemeral,
+				});
+				return;
+			}
+
+			try {
+				await member.roles.add(gc.roles.verified);
+			} catch (e) {
+				console.error('[review] roles.add failed', e);
+				await updateApplication(guildId, userId, { status: 'pending', reviewerId: undefined });
+				await interaction.followUp({
+					content:
+						'❌ Не удалось выдать роль — проверьте, что роль бота выше выдаваемой. Статус заявки возвращён в ожидание.',
+					flags: MessageFlags.Ephemeral,
+				});
+				return;
+			}
+
+			await saveHistoryRecord({
+				guildId,
+				userId,
+				type: 'application_approved',
+				timestamp: Date.now(),
+				executorId: interaction.user.id,
+				reviewMessageUrl: app?.reviewMessageUrl ?? interaction.message.url,
+			});
+
+			const dmOk = await member
+				.send({
+					embeds: [buildDmEmbed('✅ Заявка одобрена', 'Добро пожаловать на сервер!', 0x57f287)],
+				})
+				.then(() => true)
+				.catch(() => false);
+
+			const reviewUrl = app.reviewMessageUrl ?? interaction.message.url;
+			if (reviewUrl) {
+				const parsed = reviewUrl.match(/channels\/(\d+)\/(\d+)\/(\d+)/);
+				if (parsed) {
+					const [, , channelId, messageId] = parsed;
+					const reviewChannel = await interaction.client.channels.fetch(channelId).catch(() => null);
+					if (reviewChannel?.isTextBased()) {
+						const msg = await (reviewChannel as TextChannel).messages.fetch(messageId).catch(() => null);
+						if (msg && msg.embeds[0]) {
+							const resolved = buildResolvedEmbed(
+								EmbedBuilder.from(msg.embeds[0]),
+								'Принято',
+								0x57f287,
+								interaction.user.id,
+							);
+							await msg
+								.edit({ embeds: [resolved], components: [buildProcessedButtonRow('application')] })
+								.catch(() => null);
+						}
+					}
+				}
+			}
+
+			await postDecisionMessage(interaction.client, gc.channels.decisions, 'application', {
+				label: 'Принято',
+				color: 0x57f287,
+				reviewerId: interaction.user.id,
+				targetUserId: userId,
+				reviewMessageUrl: app.reviewMessageUrl ?? interaction.message.url,
+				number: app.number,
+			});
+
+			if (app.questionChannelId) {
+				const questionChannel = await guild.channels.fetch(app.questionChannelId).catch(() => null);
+				await questionChannel?.delete().catch((e) => {
+					console.error('[review] failed to delete question channel', e);
+					return null;
+				});
+				await updateApplication(guildId, userId, { questionChannelId: undefined });
+			}
+
+			if (gc.channels.welcome) {
+				try {
+					const welcomeChannel = await guild.channels.fetch(gc.channels.welcome);
+					if (welcomeChannel?.isTextBased()) {
+						const pingMessage = await welcomeChannel.send({
+							content: `<@${userId}>`,
+							allowedMentions: { users: [userId] },
+						});
+						await pingMessage.delete().catch(() => null);
+						await welcomeChannel.send({
+							embeds: [buildWelcomeEmbed(member)],
+						});
+					}
+				} catch (e) {
+					console.error('[review] welcome message failed', e);
+				}
+			}
+
+			const replyContent = dmOk
+				? '✅ Анкета принята.'
+				: '⚠️ Роль выдана, но отправить ЛС не удалось (закрыты личные сообщения).';
+
+			await interaction.editReply({
+				content: replyContent,
+				embeds: [],
+				components: [],
 			});
 		}
 	},
 };
 
 export default handler;
+

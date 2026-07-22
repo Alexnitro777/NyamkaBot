@@ -7,6 +7,7 @@ import {
 	ChannelType,
 	PermissionFlagsBits,
 	MessageFlags,
+	TextChannel,
 } from 'discord.js';
 import { ButtonHandler, GuildConfig } from '../types';
 import {
@@ -31,11 +32,17 @@ import { restoreMemberRoles } from '../roles';
 const DENY_COOLDOWN_MS = 48 * 60 * 60 * 1000;
 
 const handler: ButtonHandler = {
-	customId: /^appeal:(amnesty|deny|question):\d+$/,
+	customId: /^appeal:(amnesty|confirm_amnesty|deny|confirm_deny|question):\d+$|^appeal:cancel$/,
 
 	async execute(interaction: ButtonInteraction, gc: GuildConfig): Promise<void> {
 		if (!hasButtonAccess(interaction, gc, 'ststaff')) {
 			await interaction.reply({ content: 'Недостаточно прав.', flags: MessageFlags.Ephemeral });
+			return;
+		}
+
+		if (interaction.customId === 'appeal:cancel') {
+			await interaction.deferUpdate();
+			await interaction.deleteReply();
 			return;
 		}
 
@@ -51,6 +58,58 @@ const handler: ButtonHandler = {
 		if (appeal.status !== 'pending') {
 			await interaction.reply({
 				content: `Апелляция уже обработана (${appeal.status}).`,
+				flags: MessageFlags.Ephemeral,
+			});
+			return;
+		}
+
+		if (action === 'amnesty') {
+			const embed = new EmbedBuilder()
+				.setTitle('Подтверждение действия')
+				.setDescription(`Вы действительно хотите принять амнистию для пользователя <@${userId}>?`)
+				.setColor(0x5865f2);
+
+			const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+				new ButtonBuilder()
+					.setCustomId(`appeal:confirm_amnesty:${userId}`)
+					.setLabel('Подтвердить')
+					.setStyle(ButtonStyle.Success)
+					.setEmoji('✅'),
+				new ButtonBuilder()
+					.setCustomId('appeal:cancel')
+					.setLabel('Отмена')
+					.setStyle(ButtonStyle.Danger),
+			);
+
+			await interaction.reply({
+				embeds: [embed],
+				components: [row],
+				flags: MessageFlags.Ephemeral,
+			});
+			return;
+		}
+
+		if (action === 'deny') {
+			const embed = new EmbedBuilder()
+				.setTitle('Подтверждение действия')
+				.setDescription(`Вы действительно хотите отклонить амнистию для пользователя <@${userId}>?`)
+				.setColor(0xed4245);
+
+			const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+				new ButtonBuilder()
+					.setCustomId(`appeal:confirm_deny:${userId}`)
+					.setLabel('Подтвердить отклонение')
+					.setStyle(ButtonStyle.Danger)
+					.setEmoji('❌'),
+				new ButtonBuilder()
+					.setCustomId('appeal:cancel')
+					.setLabel('Отмена')
+					.setStyle(ButtonStyle.Danger),
+			);
+
+			await interaction.reply({
+				embeds: [embed],
+				components: [row],
 				flags: MessageFlags.Ephemeral,
 			});
 			return;
@@ -160,114 +219,133 @@ const handler: ButtonHandler = {
 			return;
 		}
 
-		await interaction.deferUpdate();
+		if (action === 'confirm_amnesty' || action === 'confirm_deny') {
+			await interaction.deferUpdate();
 
-		const newStatus = action === 'amnesty' ? 'amnestied' : 'denied';
-		const claimed = await claimAppeal(guildId, userId, newStatus, interaction.user.id);
-		if (!claimed) {
-			const fresh = await getAppeal(guildId, userId);
-			await interaction.followUp({
-				content: `Апелляция уже обработана (${fresh?.status ?? 'не найдена'}).`,
-				flags: MessageFlags.Ephemeral,
-			});
-			return;
-		}
-
-		await saveHistoryRecord({
-			guildId,
-			userId,
-			type: action === 'amnesty' ? 'appeal_amnestied' : 'appeal_denied',
-			timestamp: Date.now(),
-			executorId: interaction.user.id,
-			reviewMessageUrl: appeal?.reviewMessageUrl ?? interaction.message.url,
-		});
-
-		const guild = getGuild(interaction);
-		const member = guild ? await guild.members.fetch(userId).catch(() => null) : null;
-
-		let warning: string | undefined;
-		if (action === 'amnesty') {
-			const removed = await member?.roles
-				.remove(gc.roles.blacklist)
-				.then(() => true)
-				.catch((e) => {
-					console.error('[appealReview] roles.remove failed', e);
-					return false;
+			const isAmnesty = action === 'confirm_amnesty';
+			const newStatus = isAmnesty ? 'amnestied' : 'denied';
+			const claimed = await claimAppeal(guildId, userId, newStatus, interaction.user.id);
+			if (!claimed) {
+				const fresh = await getAppeal(guildId, userId);
+				await interaction.followUp({
+					content: `Апелляция уже обработана (${fresh?.status ?? 'не найдена'}).`,
+					flags: MessageFlags.Ephemeral,
 				});
-			if (member && !removed) {
-				warning = '⚠️ Не удалось снять роль ЧС — проверьте иерархию ролей бота.';
+				return;
 			}
-			const application = await getApplication(guildId, userId);
-			if (member && application?.removedRoles?.length) {
-				const restored = await restoreMemberRoles(member, gc, application.removedRoles);
-				if (!restored) {
-					warning = warning
-						? `${warning}\n⚠️ Не удалось вернуть часть ролей.`
-						: '⚠️ Не удалось вернуть часть ролей — проверьте иерархию ролей бота.';
+
+			await saveHistoryRecord({
+				guildId,
+				userId,
+				type: isAmnesty ? 'appeal_amnestied' : 'appeal_denied',
+				timestamp: Date.now(),
+				executorId: interaction.user.id,
+				reviewMessageUrl: appeal?.reviewMessageUrl ?? interaction.message.url,
+			});
+
+			const guild = getGuild(interaction);
+			const member = guild ? await guild.members.fetch(userId).catch(() => null) : null;
+
+			let warning: string | undefined;
+			if (isAmnesty) {
+				const removed = await member?.roles
+					.remove(gc.roles.blacklist)
+					.then(() => true)
+					.catch((e) => {
+						console.error('[appealReview] roles.remove failed', e);
+						return false;
+					});
+				if (member && !removed) {
+					warning = '⚠️ Не удалось снять роль ЧС — проверьте иерархию ролей бота.';
+				}
+				const application = await getApplication(guildId, userId);
+				if (member && application?.removedRoles?.length) {
+					const restored = await restoreMemberRoles(member, gc, application.removedRoles);
+					if (!restored) {
+						warning = warning
+							? `${warning}\n⚠️ Не удалось вернуть часть ролей.`
+							: '⚠️ Не удалось вернуть часть ролей — проверьте иерархию ролей бота.';
+					}
+				}
+				if (application) {
+					await updateApplication(guildId, userId, { status: 'amnestied', removedRoles: [] });
+				}
+				await member
+					?.send({
+						embeds: [
+							buildDmEmbed(
+								'✅ Амнистия принята',
+								'С вас снят чёрный список.',
+								0x57f287,
+							),
+						],
+					})
+					.catch(() => null);
+			} else {
+				const ts = Math.floor((Date.now() + DENY_COOLDOWN_MS) / 1000);
+				await member
+					?.send({
+						embeds: [
+							buildDmEmbed(
+								'❌ В амнистии отказано',
+								`Ваша апелляция отклонена. ЧС сохраняется.\n\nВы сможете подать новую апелляцию <t:${ts}:R> (<t:${ts}:f>).`,
+								0xed4245,
+							),
+						],
+					})
+					.catch(() => null);
+			}
+
+			const reviewUrl = appeal.reviewMessageUrl ?? interaction.message.url;
+			if (reviewUrl) {
+				const parsed = reviewUrl.match(/channels\/(\d+)\/(\d+)\/(\d+)/);
+				if (parsed) {
+					const [, , channelId, messageId] = parsed;
+					const reviewChannel = await interaction.client.channels.fetch(channelId).catch(() => null);
+					if (reviewChannel?.isTextBased()) {
+						const msg = await (reviewChannel as TextChannel).messages.fetch(messageId).catch(() => null);
+						if (msg && msg.embeds[0]) {
+							const resolved = buildResolvedEmbed(
+								EmbedBuilder.from(msg.embeds[0]),
+								isAmnesty ? 'Амнистия принята' : 'В амнистии отказано',
+								isAmnesty ? 0x57f287 : 0xed4245,
+								interaction.user.id,
+							);
+							await msg
+								.edit({ embeds: [resolved], components: [buildProcessedButtonRow('appeal')] })
+								.catch(() => null);
+						}
+					}
 				}
 			}
-			if (application) {
-				await updateApplication(guildId, userId, { status: 'amnestied', removedRoles: [] });
-			}
-			await member
-				?.send({
-					embeds: [
-						buildDmEmbed(
-							'✅ Амнистия принята',
-							'С вас снят чёрный список.',
-							0x57f287,
-						),
-					],
-				})
-				.catch(() => null);
-		} else {
-			const ts = Math.floor((Date.now() + DENY_COOLDOWN_MS) / 1000);
-			await member
-				?.send({
-					embeds: [
-						buildDmEmbed(
-							'❌ В амнистии отказано',
-							`Ваша апелляция отклонена. ЧС сохраняется.\n\nВы сможете подать новую апелляцию <t:${ts}:R> (<t:${ts}:f>).`,
-							0xed4245,
-						),
-					],
-				})
-				.catch(() => null);
-		}
 
-		const resolved = buildResolvedEmbed(
-			EmbedBuilder.from(interaction.message.embeds[0]),
-			action === 'amnesty' ? 'Амнистия принята' : 'В амнистии отказано',
-			action === 'amnesty' ? 0x57f287 : 0xed4245,
-			interaction.user.id,
-		);
-		await interaction.editReply({
-			embeds: [resolved],
-			components: [buildProcessedButtonRow('appeal')],
-		});
-
-		await postDecisionMessage(interaction.client, gc.channels.decisions, 'appeal', {
-			label: action === 'amnesty' ? 'Амнистия принята' : 'В амнистии отказано',
-			color: action === 'amnesty' ? 0x57f287 : 0xed4245,
-			reviewerId: interaction.user.id,
-			targetUserId: userId,
-			reviewMessageUrl: appeal.reviewMessageUrl ?? interaction.message.url,
-			number: appeal.number,
-		});
-
-		if (appeal.questionChannelId && guild) {
-			const questionChannel = await guild.channels.fetch(appeal.questionChannelId).catch(() => null);
-			await questionChannel?.delete().catch((e) => {
-				console.error('[appealReview] failed to delete question channel', e);
-				return null;
+			await postDecisionMessage(interaction.client, gc.channels.decisions, 'appeal', {
+				label: isAmnesty ? 'Амнистия принята' : 'В амнистии отказано',
+				color: isAmnesty ? 0x57f287 : 0xed4245,
+				reviewerId: interaction.user.id,
+				targetUserId: userId,
+				reviewMessageUrl: appeal.reviewMessageUrl ?? interaction.message.url,
+				number: appeal.number,
 			});
-			await updateAppeal(guildId, userId, { questionChannelId: undefined });
-		}
 
-		if (warning) {
-			await interaction.followUp({ content: warning, flags: MessageFlags.Ephemeral });
+			if (appeal.questionChannelId && guild) {
+				const questionChannel = await guild.channels.fetch(appeal.questionChannelId).catch(() => null);
+				await questionChannel?.delete().catch((e) => {
+					console.error('[appealReview] failed to delete question channel', e);
+					return null;
+				});
+				await updateAppeal(guildId, userId, { questionChannelId: undefined });
+			}
+
+			const baseReply = isAmnesty ? '✅ Амнистия принята.' : '❌ В амнистии отказано.';
+			await interaction.editReply({
+				content: warning ? `${baseReply}\n${warning}` : baseReply,
+				embeds: [],
+				components: [],
+			});
 		}
 	},
 };
 
 export default handler;
+
