@@ -31,17 +31,11 @@ import {
 import { hasButtonAccess, getGuild } from '../permissions';
 
 const handler: ButtonHandler = {
-	customId: /^review:(approve|confirm_approve|reject|question|blacklist):\d+$|^review:cancel$/,
+	customId: /^review:(approve|reject|question|blacklist):\d+$/,
 
 	async execute(interaction: ButtonInteraction, gc: GuildConfig): Promise<void> {
 		if (!hasButtonAccess(interaction, gc, 'staff')) {
 			await interaction.reply({ content: 'Недостаточно прав.', flags: MessageFlags.Ephemeral });
-			return;
-		}
-
-		if (interaction.customId === 'review:cancel') {
-			await interaction.deferUpdate();
-			await interaction.deleteReply();
 			return;
 		}
 
@@ -71,142 +65,6 @@ const handler: ButtonHandler = {
 		}
 
 		if (action === 'approve') {
-			const embed = new EmbedBuilder()
-				.setTitle('Подтверждение действия')
-				.setDescription(`Вы действительно хотите принять анкету пользователя <@${userId}>?`)
-				.setColor(0x5865f2);
-
-			const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-				new ButtonBuilder()
-					.setCustomId(`review:confirm_approve:${userId}`)
-					.setLabel('Подтвердить')
-					.setStyle(ButtonStyle.Success)
-					.setEmoji('✅'),
-				new ButtonBuilder()
-					.setCustomId('review:cancel')
-					.setLabel('Отмена')
-					.setStyle(ButtonStyle.Danger),
-			);
-
-			await interaction.reply({
-				embeds: [embed],
-				components: [row],
-				flags: MessageFlags.Ephemeral,
-			});
-			return;
-		}
-
-		if (action === 'reject' || action === 'blacklist') {
-			const modal = new ModalBuilder()
-				.setCustomId(`review:reason:${action}:${userId}`)
-				.setTitle(action === 'reject' ? 'Причина отказа' : 'Причина ЧС');
-			const input = new TextInputBuilder()
-				.setCustomId('reason')
-				.setLabel('Укажите причину')
-				.setStyle(TextInputStyle.Paragraph)
-				.setRequired(true)
-				.setMaxLength(1000);
-			modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
-			await interaction.showModal(modal);
-			return;
-		}
-
-		if (action === 'question') {
-			await interaction.deferUpdate();
-
-			if (app.questionChannelId) {
-				const existing = await guild.channels.fetch(app.questionChannelId).catch(() => null);
-				if (existing) {
-					await interaction.followUp({
-						content: `Канал с вопросом уже существует: <#${existing.id}>.`,
-						flags: MessageFlags.Ephemeral,
-					});
-					return;
-				}
-			}
-
-			const member = await guild.members.fetch(userId).catch(() => null);
-			if (!member) {
-				await interaction.followUp({
-					content: 'Пользователь покинул сервер.',
-					flags: MessageFlags.Ephemeral,
-				});
-				return;
-			}
-
-			const channel = await guild.channels.create({
-				name: `вопрос-${member.user.username}`.slice(0, 90),
-				type: ChannelType.GuildText,
-				parent: gc.questionCategoryId,
-				permissionOverwrites: [
-					{ id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-					{
-						id: userId,
-						allow: [
-							PermissionFlagsBits.ViewChannel,
-							PermissionFlagsBits.SendMessages,
-							PermissionFlagsBits.ReadMessageHistory,
-						],
-					},
-					...[...new Set([...gc.roles.staff, ...gc.roles.ststaff])].map((roleId) => ({
-						id: roleId,
-						allow: [
-							PermissionFlagsBits.ViewChannel,
-							PermissionFlagsBits.SendMessages,
-							PermissionFlagsBits.ReadMessageHistory,
-						],
-					})),
-				],
-			});
-
-			const claimed = await claimApplicationQuestionChannel(guildId, userId, channel.id, app.questionChannelId ?? null);
-			if (!claimed) {
-				await channel.delete('Дублирующий канал-вопрос').catch(() => null);
-				const fresh = await getApplication(guildId, userId);
-				await interaction.followUp({
-					content: fresh?.questionChannelId
-						? `Канал с вопросом уже существует: <#${fresh.questionChannelId}>.`
-						: 'Канал с вопросом уже создаётся.',
-					flags: MessageFlags.Ephemeral,
-				});
-				return;
-			}
-
-			const embed = new EmbedBuilder()
-				.setTitle('Уточнение по заявке')
-				.setDescription(
-					`<@${userId}>, у модерации появился вопрос по вашей анкете.\n` +
-						'Ответьте здесь. Кнопки ниже — для модерации.',
-				)
-				.setColor(0x5865f2);
-
-			const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-				new ButtonBuilder()
-					.setLabel('Открыть анкету')
-					.setStyle(ButtonStyle.Link)
-					.setURL(app.reviewMessageUrl ?? interaction.message.url),
-				new ButtonBuilder()
-					.setCustomId(`question:close:${channel.id}`)
-					.setLabel('Закрыть канал')
-					.setStyle(ButtonStyle.Danger)
-					.setEmoji('🗑️'),
-			);
-
-			const mentionUserIds = [...new Set([userId, interaction.user.id])];
-			const pingMsg = await channel.send({
-				content: mentionUserIds.map((id) => `<@${id}>`).join(' '),
-				allowedMentions: { users: mentionUserIds },
-			});
-			await channel.send({ embeds: [embed], components: [row] });
-			await pingMsg.delete().catch(() => null);
-
-			await interaction.editReply({
-				components: [buildReviewButtons(userId, channel.url)],
-			});
-			return;
-		}
-
-		if (action === 'confirm_approve') {
 			await interaction.deferUpdate();
 
 			const member = await guild.members.fetch(userId).catch(() => null);
@@ -320,11 +178,121 @@ const handler: ButtonHandler = {
 				? '✅ Анкета принята.'
 				: '⚠️ Роль выдана, но отправить ЛС не удалось (закрыты личные сообщения).';
 
-			await interaction.editReply({
+			await interaction.followUp({
 				content: replyContent,
-				embeds: [],
-				components: [],
+				flags: MessageFlags.Ephemeral,
 			});
+			return;
+		}
+
+		if (action === 'reject' || action === 'blacklist') {
+			const modal = new ModalBuilder()
+				.setCustomId(`review:reason:${action}:${userId}`)
+				.setTitle(action === 'reject' ? 'Причина отказа' : 'Причина ЧС');
+			const input = new TextInputBuilder()
+				.setCustomId('reason')
+				.setLabel('Укажите причину')
+				.setStyle(TextInputStyle.Paragraph)
+				.setRequired(true)
+				.setMaxLength(1000);
+			modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
+			await interaction.showModal(modal);
+			return;
+		}
+
+		if (action === 'question') {
+			await interaction.deferUpdate();
+
+			if (app.questionChannelId) {
+				const existing = await guild.channels.fetch(app.questionChannelId).catch(() => null);
+				if (existing) {
+					await interaction.followUp({
+						content: `Канал с вопросом уже существует: <#${existing.id}>.`,
+						flags: MessageFlags.Ephemeral,
+					});
+					return;
+				}
+			}
+
+			const member = await guild.members.fetch(userId).catch(() => null);
+			if (!member) {
+				await interaction.followUp({
+					content: 'Пользователь покинул сервер.',
+					flags: MessageFlags.Ephemeral,
+				});
+				return;
+			}
+
+			const channel = await guild.channels.create({
+				name: `вопрос-${member.user.username}`.slice(0, 90),
+				type: ChannelType.GuildText,
+				parent: gc.questionCategoryId,
+				permissionOverwrites: [
+					{ id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+					{
+						id: userId,
+						allow: [
+							PermissionFlagsBits.ViewChannel,
+							PermissionFlagsBits.SendMessages,
+							PermissionFlagsBits.ReadMessageHistory,
+						],
+					},
+					...[...new Set([...gc.roles.staff, ...gc.roles.ststaff])].map((roleId) => ({
+						id: roleId,
+						allow: [
+							PermissionFlagsBits.ViewChannel,
+							PermissionFlagsBits.SendMessages,
+							PermissionFlagsBits.ReadMessageHistory,
+						],
+					})),
+				],
+			});
+
+			const claimed = await claimApplicationQuestionChannel(guildId, userId, channel.id, app.questionChannelId ?? null);
+			if (!claimed) {
+				await channel.delete('Дублирующий канал-вопрос').catch(() => null);
+				const fresh = await getApplication(guildId, userId);
+				await interaction.followUp({
+					content: fresh?.questionChannelId
+						? `Канал с вопросом уже существует: <#${fresh.questionChannelId}>.`
+						: 'Канал с вопросом уже создаётся.',
+					flags: MessageFlags.Ephemeral,
+				});
+				return;
+			}
+
+			const embed = new EmbedBuilder()
+				.setTitle('Уточнение по заявке')
+				.setDescription(
+					`<@${userId}>, у модерации появился вопрос по вашей анкете.\n` +
+						'Ответьте здесь. Кнопки ниже — для модерации.',
+				)
+				.setColor(0x5865f2);
+
+			const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+				new ButtonBuilder()
+					.setLabel('Открыть анкету')
+					.setStyle(ButtonStyle.Link)
+					.setURL(app.reviewMessageUrl ?? interaction.message.url),
+				new ButtonBuilder()
+					.setCustomId(`question:close:${channel.id}`)
+					.setLabel('Закрыть канал')
+					.setStyle(ButtonStyle.Danger)
+					.setEmoji('🗑️'),
+			);
+
+			const mentionUserIds = [...new Set([userId, interaction.user.id])];
+			const pingMsg = await channel.send({
+				content: mentionUserIds.map((id) => `<@${id}>`).join(' '),
+				allowedMentions: { users: mentionUserIds },
+			});
+			await channel.send({ embeds: [embed], components: [row] });
+			await pingMsg.delete().catch(() => null);
+
+			await interaction.editReply({
+				components: [buildReviewButtons(userId, channel.url)],
+			});
+			return;
 		}
 	},
 };
